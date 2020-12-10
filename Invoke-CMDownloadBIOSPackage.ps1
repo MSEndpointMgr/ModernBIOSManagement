@@ -39,8 +39,11 @@
 	Use this switch to check for drivers packages that matches earlier versions of Windows than what's specified as input for TargetOSVersion.
 
 .EXAMPLE
-	# Detect and download latest available BIOS package with ConfigMgr through the admin service:
-	.\Invoke-CMDownloadBIOSPackage.ps1 -Endpoint "CM01.domain.com" 
+	# Detect and download latest available BIOS package with ConfigMgr through the admin service in a baremetal deployment (default):
+	.\Invoke-CMDownloadBIOSPackage.ps1 -BareMetal -Endpoint "CM01.domain.com" 
+
+	# Detect and download latest available BIOS package with ConfigMgr through the admin service in a full OS deployment:
+	.\Invoke-CMDownloadBIOSPackage.ps1 -BIOSUpdate -Endpoint "CM01.domain.com"
 
 	# Detect, and report on the matched BIOS release without downloading / in full OS
 	.\Invoke-CMDownloadBIOSPackage.ps1 -Endpoint "CM01.domain.com" -UserName "Username" -Password "Password" -DebugMode
@@ -60,18 +63,27 @@
 	3.0.1 - (2020-12-04) - Fixes to parameter sets, matching logic and removal of no longer code
 						 - Added TS variable support for Resource URL
 	3.0.2 - (2020-12-09) - Added new functionality to be able to read a custom Application ID URI, if the default of https://ConfigMgrService is not defined on the ServerApp.
+	3.0.3 - (2020-12-10) - Fixed issue in WinPE, with addition of baremetal parameter switch (now default)
+						   Added BIOSUpdate parameter switch for Full OS deployments
 
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param (
-	[parameter(Mandatory = $true, ParameterSetName = "Production", HelpMessage = "Specify the internal fully qualified domain name of the server hosting the AdminService, e.g. CM01.domain.local.")]
+	[parameter(Mandatory = $true, ParameterSetName = "BareMetal", HelpMessage = "Set the script to operate in 'BareMetal' deployment type mode.")]
+	[switch]$BareMetal,
+	
+	[parameter(Mandatory = $true, ParameterSetName = "BIOSUpdate", HelpMessage = "Set the script to operate in 'BIOSUpdate' deployment type mode.")]
+	[switch]$BIOSUpdate,
+	
+	[parameter(Mandatory = $true, ParameterSetName = "BIOSUpdate", HelpMessage = "Specify the internal fully qualified domain name of the server hosting the AdminService, e.g. CM01.domain.local.")]
+	[parameter(Mandatory = $true, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Endpoint,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Set the script to operate in 'DebugMode' deployment type mode.")]
 	[switch]$DebugMode,
-		
+	
 	[parameter(Mandatory = $true, ParameterSetName = "Debug", HelpMessage = "Specify the service account user name used for authenticating against the AdminService endpoint.")]
 	[ValidateNotNullOrEmpty()]
 	[string]$UserName = "",
@@ -80,11 +92,13 @@ param (
 	[ValidateNotNullOrEmpty()]
 	[string]$Password = "",
 	
-	[parameter(Mandatory = $false, ParameterSetName = "Production", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
+	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = "BIOS",
 	
-	[parameter(Mandatory = $false, ParameterSetName = "Production", HelpMessage = "Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.")]
+	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.")]
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[ValidateNotNullOrEmpty()]
 	[ValidateSet("Production", "Pilot")]
@@ -104,6 +118,7 @@ param (
 	[string]$SystemSKU
 )
 Begin {
+	
 	# Load Microsoft.SMS.TSEnvironment COM object
 	if ($PSCmdLet.ParameterSetName -notlike "Debug") {
 		try {
@@ -478,10 +493,9 @@ Process {
 				
 				# Attempt to read TSEnvironment variable MDMApplicationIDURI
 				$Script:ApplicationIDURI = $TSEnvironment.Value("MDMApplicationIDURI")
-				if (-not([string]::IsNullOrEmpty($Script:ApplicationIDURI))) {
+				if (-not ([string]::IsNullOrEmpty($Script:ApplicationIDURI))) {
 					Write-CMLogEntry -Value " - Successfully read Application ID URI from TS environment variable 'MDMApplicationIDURI': $($Script:ApplicationIDURI)" -Severity 1
-				}
-				else {
+				} else {
 					Write-CMLogEntry -Value " - Using standard Application ID URI value: https://ConfigMgrService" -Severity 2
 					$Script:ApplicationIDURI = "https://ConfigMgrService"
 				}
@@ -491,6 +505,19 @@ Process {
 	
 	function Get-AdminServiceEndpointType {
 		switch ($Script:DeploymentMode) {
+			"BareMetal" {
+				$SMSInWinPE = $TSEnvironment.Value("_SMSTSInWinPE")
+				if ($SMSInWinPE -eq $true) {
+					Write-CMLogEntry -Value " - Detected that script was running within a task sequence in WinPE phase, automatically configuring AdminService endpoint type" -Severity 1
+					$Script:AdminServiceEndpointType = "Internal"
+				} else {
+					Write-CMLogEntry -Value " - Detected that script was not running in WinPE of a bare metal deployment type, this is not a supported scenario" -Severity 3
+					
+					# Throw terminating error
+					$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
+					$PSCmdlet.ThrowTerminatingError($ErrorRecord)
+				}
+			}
 			"Debug" {
 				$Script:AdminServiceEndpointType = "Internal"
 			}
@@ -585,9 +612,9 @@ Process {
 		try {
 			# Attempt to install PSIntuneAuth module, if already installed ensure the latest version is being used
 			Install-AuthModule
-					
+			
 			# Import MS Intune Auth Token
-			Write-CMLogEntry -Value " - Importing PSIntuneAuth PS module" -Severity 1			
+			Write-CMLogEntry -Value " - Importing PSIntuneAuth PS module" -Severity 1
 			Import-Module -Name PSIntuneAuth
 			
 			# Retrieve authentication token
@@ -1148,6 +1175,7 @@ Process {
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 								# Determine the latest BIOS package by creation date
 								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+
 							} elseif ($ComputerManufacturer -match "Microsoft") {
 								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
 							}
@@ -1209,7 +1237,7 @@ Process {
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"
 	
-	try {	
+	try {
 		Write-CMLogEntry -Value "[PrerequisiteChecker]: Starting environment prerequisite checker" -Severity 1
 		
 		# Determine the deployment type mode for driver package installation
