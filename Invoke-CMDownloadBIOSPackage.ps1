@@ -8,6 +8,12 @@
     the PackageID property of a package matching the computer model. If multiple packages are detect, it will select
 	most current one by the creation date of the packages.
 
+.PARAMETER BareMetal
+	Set the script to operate in 'BareMetal' (WinPE) deployment type mode.
+
+.PARAMETER BIOSUpdate
+	Set the script to operate in 'BIOSUpdate' (full OS) deployment type mode.
+
 .PARAMETER DebugMode
 	Set the script to operate in 'DebugMode' deployment type mode.
 
