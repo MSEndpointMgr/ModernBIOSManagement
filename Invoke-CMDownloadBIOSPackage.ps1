@@ -71,6 +71,7 @@
 	3.0.2 - (2020-12-09) - Added new functionality to be able to read a custom Application ID URI, if the default of https://ConfigMgrService is not defined on the ServerApp.
 	3.0.3 - (2020-12-10) - Fixed issue in WinPE, with addition of baremetal parameter switch (now default)
 						   Added BIOSUpdate parameter switch for Full OS deployments
+	3.0.4 - (2021-02-04) - Fixed issue device has some UEFI updates, but none is selected instead of the last update
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -1166,24 +1167,24 @@ Process {
 							
 							# Determine the latest BIOS package by creation date
 							if ($ComputerManufacturer -match "Dell") {
-								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
+								$PackageList = , $($PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1)
 							} elseif ($ComputerManufacturer -eq "Lenovo") {
 								$ComputerDescription = Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
 								# Attempt to find exact model match for Lenovo models which overlap model types
-								$PackageList = $PackageList | Where-object {
+								$PackageList = , $($PackageList | Where-object {
 									($_.Name -like "*$ComputerDescription") -and ($_.Manufacturer -match $ComputerManufacturer)
-								} | Sort-object -Property SourceDate -Descending | Select-Object -First 1
+								} | Sort-object -Property SourceDate -Descending | Select-Object -First 1)
 								
 								If ($PackageList -eq $null) {
 									# Fall back to select the latest model type match if no model name match is found
-									$PackageList = $PackageList | Sort-object -Property SourceDate -Descending | Select-Object -First 1
+									$PackageList = , $($PackageList | Sort-object -Property SourceDate -Descending | Select-Object -First 1)
 								}
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 								# Determine the latest BIOS package by creation date
-								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+								$PackageList = , $($PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1)
 
 							} elseif ($ComputerManufacturer -match "Microsoft") {
-								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+								$PackageList = , $($PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1)
 							}
 							if ($PackageList.Count -eq 1) {
 								# Check if BIOS package is newer than currently installed
