@@ -31,6 +31,7 @@
 	1.0.6 - (2020-02-06) Previous "fix" in 1.0.5 was a mistake, this version corrects it
 	1.0.7 - (2020-04-23) Added additional logging output when flash utility is being executed including exit code. Removed the LogFileName parameter as the 
 			   	         exit code from the flash utility is now embedded in the Invoke-HPBIOSUpdate.log file.
+	1.0.8 - (2022-03-11) Added improved logging with file name of flash utility included. Added copy of log file for BIOS utilities that don't support the logfilename parameter.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -67,7 +68,7 @@ Process {
 
 			[parameter(Mandatory = $false, HelpMessage = "Name of the log file that the entry will written to.")]
 			[ValidateNotNullOrEmpty()]
-			[string]$FileName = "Invoke-HPBIOSUpdate.log"	
+			[string]$FileName = "Invoke-HPBIOSUpdate.log"
 		)
 		
 		# Determine log file location
@@ -109,7 +110,7 @@ Process {
 		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC.exe" } | Select-Object -ExpandProperty FullName	
 	}
 
-    # Attempt to detect HPFirmwareUpdRec utility file name
+	# Attempt to detect HPFirmwareUpdRec utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec64.exe" } | Select-Object -ExpandProperty FullName
 	}
@@ -117,7 +118,7 @@ Process {
 		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec.exe" } | Select-Object -ExpandProperty FullName	
 	}
 
-    # Attempt to detect HPFirmwareUpdRec utility file name
+	# Attempt to detect HPFirmwareUpdRec utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash.exe" } | Select-Object -ExpandProperty FullName
 	}
@@ -127,7 +128,7 @@ Process {
 
 	if ($HPBIOSUPDUtil -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
-		Write-CMLogEntry -Value "Using HPBIOSUpdRec BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using $HPBIOSUPDUtil BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPBIOSUPDUtil
@@ -135,7 +136,7 @@ Process {
 
 	if ($HPFirmwareUpdRec -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
-		Write-CMLogEntry -Value "Using HPFirmwareUpdRec BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using $HPFirmwareUpdRec BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPFirmwareUpdRec
@@ -143,9 +144,9 @@ Process {
 
 	if ($HPFlashUtil -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
-		Write-CMLogEntry -Value "Using HPFirmwareUpdRec BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using $HPFlashUtil BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
-		$FlashSwitches = " -s -r"
+		$FlashSwitches = " -s"
 		$FlashUtility = $HPFlashUtil
 	}
 	
@@ -167,7 +168,7 @@ Process {
 		try {		
 			# Start flash update process
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
 
 			# Output Exit Code
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
@@ -198,13 +199,18 @@ Process {
 		# Start Bios update process
 		try {			
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait			
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait			
 			
 			# Output Exit Code
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
 		}
 		catch [System.Exception] {
 			Write-Warning -Message "An error occured while updating the system BIOS in Full OS phase. Error message: $($_.Exception.Message)"; exit 1
+		}
+
+		$LogFiles = Get-ChildItem -Path $Path -Filter "*.log"
+		$LogFiles | ForEach-Object {
+			Copy-Item -Path $PSItem.FullName -Destination $Script:TSEnvironment.Value("_SMSTSLogPath")
 		}
 	}
 }
