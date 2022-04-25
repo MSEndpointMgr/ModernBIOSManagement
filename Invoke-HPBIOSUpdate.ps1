@@ -105,7 +105,7 @@ Process {
 	# Write log file for script execution	
 	Write-CMLogEntry -Value "Initiating script to determine flashing capabilities for HP BIOS updates" -Severity 1
 	
-	if ($Password -ne $null){
+	if (-not([System.String]::IsNullOrEmpty($Password))){
 		# Attempt to detect HPQPSWD utility file name
 		$HPQPswdUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQPswd.exe" } | Select-Object -ExpandProperty FullName	
 
