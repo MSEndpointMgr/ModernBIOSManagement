@@ -105,16 +105,30 @@ Process {
 	# Write log file for script execution	
 	Write-CMLogEntry -Value "Initiating script to determine flashing capabilities for HP BIOS updates" -Severity 1
 	
-	if (-not([System.String]::IsNullOrEmpty($Password))){
-		# Attempt to detect HPQPSWD utility file name
-		$HPQPswdUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQPswd.exe" } | Select-Object -ExpandProperty FullName	
+	if (-not([System.String]::IsNullOrEmpty($Password))) {
+
+		# Attempt to detect HPQPSWD utility file name - not all HP packages have a seperate x64 exe for this tool
+
+		if (([Environment]::Is64BitOperatingSystem) -eq $true) {
+			$PossibleHPQPswdUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQPswd*.exe" } | Select-Object -ExpandProperty FullName
+			if ($PossibleHPQPswdUtil.Count -eq 1){
+				$HPQPswdUtil = $PossibleHPQPswdUtil	# If we found only one tool, select that one
+			}
+			else {
+				$HPQPswdUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpqPswd64.exe" } | Select-Object -ExpandProperty FullName	
+			}
+		}
+		else {
+			$HPQPswdUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQPswd.exe" } | Select-Object -ExpandProperty FullName
+		}
+		
 
 		## Create password bin file
 		try {		
 			# Start creating bin file process
 			Write-CMLogEntry -Value "Creating password bin file: $($HPQPswdUtil)" -Severity 1
 			$HpqPwdSwitches = "/p`"$($Password)`" /s /f`"password.bin`""
-			$HpqPwdProcess = Start-Process -FilePath $HPQPswdUtil -ArgumentList $HpqPwdSwitches -Passthru -Wait -ErrorAction Stop
+			$HpqPwdProcess = Start-Process -FilePath $HPQPswdUtil -ArgumentList $HpqPwdSwitches -PassThru -Wait -ErrorAction Stop
 			$PasswordBin = "password.bin"
 
 			# Output Exit Code
@@ -134,7 +148,7 @@ Process {
 		$HPBIOSUPDUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPBIOSUPDREC.exe" } | Select-Object -ExpandProperty FullName	
 	}
 
-    # Attempt to detect HPFirmwareUpdRec utility file name
+	# Attempt to detect HPFirmwareUpdRec utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec64.exe" } | Select-Object -ExpandProperty FullName
 	}
@@ -142,7 +156,7 @@ Process {
 		$HPFirmwareUpdRec = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HpFirmwareUpdRec.exe" } | Select-Object -ExpandProperty FullName	
 	}
 
-    # Attempt to detect HPFirmwareUpdRec utility file name
+	# Attempt to detect HPFirmwareUpdRec utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
 		$HPFlashUtil = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "HPQFlash.exe" } | Select-Object -ExpandProperty FullName
 	}
@@ -152,7 +166,7 @@ Process {
 
 	if ($HPBIOSUPDUtil -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
-        Write-CMLogEntry -Value "Using $HPBIOSUPDUtil BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using $HPBIOSUPDUtil BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r" # WAS " -s -r"
 		$FlashUtility = $HPBIOSUPDUtil
@@ -160,7 +174,7 @@ Process {
 
 	if ($HPFirmwareUpdRec -ne $null) {	
 		# Set required switches for silent upgrade of the bios and logging
-        Write-CMLogEntry -Value "Using $HPFirmwareUpdRec BIOS update method" -Severity 1
+		Write-CMLogEntry -Value "Using $HPFirmwareUpdRec BIOS update method" -Severity 1
 		# This -r switch appears to be undocumented, which is a shame really, but this prevents the reboot without exit code. The command now returns a correct exit code and lets ConfigMgr reboot the computer gracefully.
 		$FlashSwitches = " -s -r"
 		$FlashUtility = $HPFirmwareUpdRec
@@ -180,7 +194,7 @@ Process {
 	
 	if (-not([System.String]::IsNullOrEmpty($PasswordBin))) {
 		# Add password to the flash bios switches
-		if (-not([System.String]::IsNullOrEmpty($Password))){
+		if (-not([System.String]::IsNullOrEmpty($Password))) {
 			$FlashSwitches = $FlashSwitches + " -p$($Path)\$($PasswordBin)"		
 		}
 		else {
@@ -198,7 +212,7 @@ Process {
 		try {		
 			# Start flash update process
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait -ErrorAction Stop
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
 
 			# Output Exit Code
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
@@ -229,7 +243,7 @@ Process {
 		# Start Bios update process
 		try {			
 			Write-CMLogEntry -Value "Running Flash Update: $($FlashUtility)$($FlashSwitches)" -Severity 1
-			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -Passthru -Wait			
+			$FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait			
 			
 			# Output Exit Code
 			Write-CMLogEntry -Value "Flash utility exit code: $($FlashProcess.ExitCode)" -Severity 1
