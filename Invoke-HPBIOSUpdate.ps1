@@ -254,11 +254,11 @@ Process {
 
 		## also HpFirmwareUpdRec.txt ?
 	}
-	$LogFiles = Get-ChildItem -Path $Path -Filter "*.log"
+	$LogFiles = Get-ChildItem -Path $Path -Recurse -Filter "*.log"
 	$LogFiles | ForEach-Object {
 		Copy-Item -Path $PSItem.FullName -Destination $Script:TSEnvironment.Value("_SMSTSLogPath")
 	}
-	$AdditionalLogFiles = Get-ChildItem -Path $Path -Filter "*.txt"
+	$AdditionalLogFiles = Get-ChildItem -Path $Path -Recurse -Filter "*.txt"
 	$AdditionalLogFiles | ForEach-Object {
 		Copy-Item -Path $PSItem.FullName -Destination $Script:TSEnvironment.Value("_SMSTSLogPath")
 	}
