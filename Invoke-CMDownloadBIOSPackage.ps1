@@ -1200,7 +1200,7 @@ Process {
 								
 								if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
 									if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
-										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
+										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($LatestPackage.PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
 										
 										try {
 											# Check for successful package download
