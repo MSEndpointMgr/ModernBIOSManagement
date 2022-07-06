@@ -1166,40 +1166,41 @@ Process {
 							
 							# Determine the latest BIOS package by creation date
 							if ($ComputerManufacturer -match "Dell") {
-								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
+								$LatestPackage = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
 							} elseif ($ComputerManufacturer -eq "Lenovo") {
 								$ComputerDescription = Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
 								# Attempt to find exact model match for Lenovo models which overlap model types
-								$PackageList = $PackageList | Where-object {
+								$LatestPackage = $PackageList | Where-object {
 									($_.Name -like "*$ComputerDescription") -and ($_.Manufacturer -match $ComputerManufacturer)
 								} | Sort-object -Property SourceDate -Descending | Select-Object -First 1
 								
-								If ($PackageList -eq $null) {
+								If ($LatestPackage -eq $null) {
 									# Fall back to select the latest model type match if no model name match is found
-									$PackageList = $PackageList | Sort-object -Property SourceDate -Descending | Select-Object -First 1
+									$LatestPackage = $PackageList | Sort-object -Property SourceDate -Descending | Select-Object -First 1
 								}
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 								# Determine the latest BIOS package by creation date
-								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+								$LatestPackage = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
 
 							} elseif ($ComputerManufacturer -match "Microsoft") {
-								$PackageList = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
+								$LatestPackage = $PackageList | Sort-Object -Property PackageCreated -Descending | Select-Object -First 1
 							}
-							if ($PackageList.Count -eq 1) {
+
+							if (($LatestPackage | Measure-Object).Count -eq 1) {
 								# Check if BIOS package is newer than currently installed
 								if ($ComputerManufacturer -match "Dell") {
-									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
+									Compare-BIOSVersion -AvailableBIOSVersion $LatestPackage.Version -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Lenovo") {
-									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].PackageDescription).Split(":")[2]).Trimend(")") -ComputerManufacturer $ComputerManufacturer
+									Compare-BIOSVersion -AvailableBIOSVersion $LatestPackage.Version -AvailableBIOSReleaseDate $(($LatestPackage.PackageDescription).Split(":")[2]).Trimend(")") -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
-									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
+									Compare-BIOSVersion -AvailableBIOSVersion $LatestPackage.Version -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Microsoft") {
 									$NewBIOSAvailable = $true
 								}
 								
 								if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
 									if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
-										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
+										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($LatestPackage.PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
 										
 										try {
 											# Check for successful package download
@@ -1212,10 +1213,10 @@ Process {
 											Write-CMLogEntry -Value "An error occurred while applying BIOS (multiple package match). Error message: $($_.Exception.Message)" -Severity 3; exit 15
 										}
 									} else {
-										Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].Version) version" -Severity 1
+										Write-CMLogEntry -Value "BIOS is already up to date with the latest $($LatestPackage.Version) version" -Severity 1
 									}
 								} else {
-									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($LatestPackage.PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
 								}
 							} else {
 								Write-CMLogEntry -Value "Unable to determine a matching BIOS package from list since an unsupported count was returned from package list, bailing out" -Severity 2; exit 1
