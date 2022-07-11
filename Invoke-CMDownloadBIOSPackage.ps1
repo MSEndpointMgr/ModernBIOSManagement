@@ -62,7 +62,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2020-10-30
+    Updated:     2022-07-11
     
     Version history:
     3.0.0 - (2020-10-30) - Script created
@@ -72,7 +72,7 @@
 	3.0.3 - (2020-12-10) - Fixed issue in WinPE, with addition of baremetal parameter switch (now default)
 						   Added BIOSUpdate parameter switch for Full OS deployments
 	3.0.4 - (2022-07-05) - Fixed issue detecting older Dells without SKU or fallback SKU
-    3.0.5 = (2022-07-11) - Fixed issue with Lenovo BIOS version and additional text in description
+    	3.0.5 - (2022-07-11) - Fixed issue with Lenovo BIOS version and additional text in description
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -832,7 +832,10 @@ Process {
                 $ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
                 $ComputerDetails.SystemSKU = (Get-CimInstance -ClassName "MS_SystemInformation" -Namespace "root\WMI").SystemSku.Trim()
                 [string]$OEMString = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty OEMStringArray
-                $ComputerDetails.FallbackSKU = [regex]::Matches($OEMString, '\[\S*]')[0].Value.TrimStart("[").TrimEnd("]")
+                if (!($OEMString -eq 'www.dell.com')) {
+                    $ComputerDetails.FallbackSKU = [regex]::Matches($OEMString, '\[\S*]')[0].Value.TrimStart("[").TrimEnd("]")
+                }                
+                
             }
             "*Lenovo*" {
                 $ComputerDetails.Manufacturer = "Lenovo"
@@ -1092,6 +1095,7 @@ Process {
         # Define machine matching values
         $ComputerSystemType = $InputObject.Model
         $ComputerManufacturer = $InputObject.Manufacturer
+        $ComputerModel = $InputObject.Model
         $SystemSKU = $InputObject.SystemSKU
 		
         # Supported manufacturers
