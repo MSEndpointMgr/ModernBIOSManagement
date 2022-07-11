@@ -72,6 +72,7 @@
 	3.0.3 - (2020-12-10) - Fixed issue in WinPE, with addition of baremetal parameter switch (now default)
 						   Added BIOSUpdate parameter switch for Full OS deployments
 	3.0.4 - (2022-07-05) - Fixed issue detecting older Dells without SKU or fallback SKU
+    3.0.5 = (2022-07-11) - Fixed issue with Lenovo BIOS version and additional text in description
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -1178,7 +1179,7 @@ Process {
                                 Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
                             }
                             elseif ($ComputerManufacturer -match "Lenovo") {
-                                Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].Description).Split(":")[2].Trimend(")")) -ComputerManufacturer $ComputerManufacturer
+                                Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].Description).Split(":")[2].Split(')')[0]) -ComputerManufacturer $ComputerManufacturer
                             }
                             elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
                                 Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
@@ -1247,7 +1248,7 @@ Process {
                                     Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
                                 }
                                 elseif ($ComputerManufacturer -match "Lenovo") {
-                                    Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].PackageDescription).Split(":")[2]).Trimend(")") -ComputerManufacturer $ComputerManufacturer
+                                    Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].Description).Split(":")[2]).Split(')')[0] -ComputerManufacturer $ComputerManufacturer
                                 }
                                 elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
                                     Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
