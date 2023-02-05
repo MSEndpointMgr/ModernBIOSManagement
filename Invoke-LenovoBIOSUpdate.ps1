@@ -126,7 +126,7 @@ Process {
 	
 	# WinUPTP bios upgrade utility file name
 	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP64.exe"	} | Select-Object -ExpandProperty FullName
+		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP64.exe" -or $_.Name -like "WinPEUPT.exe"	} | Select-Object -First 1 -ExpandProperty FullName
 	}
 	else {
 		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP.exe" } | Select-Object -ExpandProperty FullName
