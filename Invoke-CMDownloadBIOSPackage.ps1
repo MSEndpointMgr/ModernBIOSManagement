@@ -44,6 +44,9 @@
 .PARAMETER ForceDownload
 	Force the matching BIOS package to be downloaded (and flagged for flashing) even when the installed BIOS version already matches the package version. This is an opt-in switch used for intentional re-application scenarios -- for example recreating Dell BIOS recovery images on newer Pro/Precision platforms after OS deployment, SSD replacement or disk wipes. The equivalent task sequence variable is SMSTSForceBIOSDownload=True. Default behaviour (skip when already up to date) is unchanged.
 
+.PARAMETER XMLPackage
+	Set the script to operate in 'XMLPackage' deployment type mode, matching BIOS
+
 .PARAMETER OSVersionFallback
 	Use this switch to check for drivers packages that matches earlier versions of Windows than what's specified as input for TargetOSVersion.
 
@@ -65,7 +68,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2026-08-21
+    Updated:     2026-09-02
     
     Version history:
     3.0.0 - (2020-10-30) - Script created
@@ -86,7 +89,8 @@
 					 - Get-BIOSUpdate matched packages against the script-level $ComputerModel parameter, which is only populated in DebugMode. In a real (BareMetal/BIOSUpdate) run it was empty, so the ComputerModel detection method and the SystemSKU-to-model fallback compared against a blank string and never matched -- most visible on Lenovo, where the SystemSKU is only the 4-char machine type and the model-name fallback is often required. Now uses $ComputerSystemType (the detected/overridden $InputObject.Model) so matching behaves identically in both modes.
 	3.0.6 - (2026-08-31) - Added optional force-download support for intentional BIOS re-application (MSEndpointMgr/ModernBIOSManagement#31):
 					 - New -ForceDownload switch (and SMSTSForceBIOSDownload=True task sequence variable) downloads the matching BIOS package and flags it for flashing (NewBIOSAvailable=true) even when the installed version already matches the package version. Enables recreating Dell BIOS recovery images (stored on internal NVMe) after OSD, SSD replacement or disk wipes. Opt-in only; default behaviour (skip when already up to date) is unchanged. Note: forcing the flash of the same version on Dell also requires the companion Dell BIOS update step to pass Dell's /f switch.
-
+	3.0.7 - (2026-09-02)
+					 - Added missing XMLPackage parameter set, previously referenced by internal
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param (
