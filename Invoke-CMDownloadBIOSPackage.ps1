@@ -95,6 +95,14 @@ param (
 	
 	[parameter(Mandatory = $true, ParameterSetName = "BIOSUpdate", HelpMessage = "Set the script to operate in 'BIOSUpdate' deployment type mode.")]
 	[switch]$BIOSUpdate,
+
+	[parameter(Mandatory = $true, ParameterSetName = "XMLPackage", HelpMessage = "Set the script to operate in 'XMLPackage' deployment type mode.")]
+	[switch]$XMLPackage,
+
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify the deployment type mode for XML based BIOS package deployments, e.g. 'BareMetal' or 'BIOSUpdate'.")]
+	[ValidateNotNullOrEmpty()]
+	[ValidateSet("BareMetal", "BIOSUpdate")]
+	[string]$XMLDeploymentType = "BareMetal",
 	
 	[parameter(Mandatory = $true, ParameterSetName = "BIOSUpdate", HelpMessage = "Specify the internal fully qualified domain name of the server hosting the AdminService, e.g. CM01.domain.local.")]
 	[parameter(Mandatory = $true, ParameterSetName = "BareMetal")]
@@ -115,11 +123,13 @@ param (
 	
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = "BIOS",
 	
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[ValidateNotNullOrEmpty()]
 	[ValidateSet("Production", "Pilot")]
@@ -140,6 +150,7 @@ param (
 
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Force the BIOS package to download and flag for flashing even when the installed version already matches (opt-in; for intentional re-application such as Dell recovery image recreation).")]
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
 	[switch]$ForceDownload
 )
