@@ -1,0 +1,95 @@
+name: PowerShell validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Validate PowerShell syntax and analyzer findings
+        shell: powershell
+        run: |
+          $syntaxErrors = @()
+          Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter '*.ps1' -File -Recurse | ForEach-Object {
+              $parseErrors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors) | Out-Null
+              if ($parseErrors) {
+                  $syntaxErrors += $parseErrors | ForEach-Object {
+                      "$($_.Extent.File):$($_.Extent.StartLineNumber):$($_.Message)"
+                  }
+              }
+          }
+
+          if ($syntaxErrors.Count -gt 0) {
+              $syntaxErrors | Write-Error
+              throw 'PowerShell syntax validation failed.'
+          }
+
+          $findings = @(Invoke-ScriptAnalyzer `
+              -Path $env:GITHUB_WORKSPACE `
+              -Recurse `
+              -Severity Error `
+              -ExcludeRule PSAvoidUsingConvertToSecureStringWithPlainText)
+
+          if ($findings.Count -gt 0) {
+              $findings | Format-List
+              throw 'PSScriptAnalyzer reported error-severity findings.'
+          }
+
+          $warnings = @(Invoke-ScriptAnalyzer `
+              -Path $env:GITHUB_WORKSPACE `
+              -Recurse `
+              -Severity Warning `
+              -ExcludeRule PSAvoidUsingConvertToSecureStringWithPlainText)
+
+          if ($warnings.Count -gt 0) {
+              Write-Warning "PSScriptAnalyzer reported $($warnings.Count) warning-level findings in legacy scripts."
+              $warnings | Select-Object RuleName, ScriptName, Line, Message | Format-Table -AutoSize
+          }
+
+      - name: Run regression suites
+        shell: powershell
+        run: |
+          $TestsDirectory = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath 'Tests'
+          if (-not (Test-Path -LiteralPath $TestsDirectory)) {
+              throw "Regression suite directory '$TestsDirectory' was not found."
+          }
+
+          $suites = @(Get-ChildItem -Path $TestsDirectory -Filter '*.Tests.ps1' -File | Sort-Object -Property Name)
+          if ($suites.Count -eq 0) {
+              throw 'No regression suites were discovered under Tests.'
+          }
+
+          $failures = @()
+          foreach ($suite in $suites) {
+              Write-Output "Running $($suite.Name)"
+              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $suite.FullName
+              if ($LASTEXITCODE -ne 0) {
+                  $failures += "$($suite.Name) (exit code $LASTEXITCODE)"
+              }
+          }
+
+          if ($failures.Count -gt 0) {
+              $failures | ForEach-Object { Write-Error "Regression suite failed: $_" }
+              throw "$($failures.Count) of $($suites.Count) regression suites failed."
+          }
+
+          Write-Output "All $($suites.Count) regression suites passed."
