@@ -35,6 +35,11 @@
 .PARAMETER Filter
 	Define a filter used when calling ConfigMgr WebService to only return objects matching the filter.
 
+.PARAMETER SiteCode
+	Specify the site code of the site that created the BIOS packages, e.g. 'P01', for a hierarchy with a central administration site (CAS) and multiple primary sites.
+	Packages are global data, so the AdminService on any site returns the packages created at every site in the hierarchy. When a site code is set, only packages created at that site (their SourceSite, which is also the PackageID prefix) are considered, so a device cannot select a package created at another primary site whose content is not on its distribution points.
+	When the parameter is not passed, the value is read from the 'MDMSiteCode' task sequence variable. When neither is set, packages from every site are considered, as before.
+
 .PARAMETER OperationalMode
 	Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.
 
@@ -60,6 +65,9 @@
 	# Detect and download latest available BIOS package with ConfigMgr through the admin service in a full OS deployment:
 	.\Invoke-CMDownloadBIOSPackage.ps1 -BIOSUpdate -Endpoint "CM01.domain.com"
 
+	# Detect and download latest available BIOS package in a hierarchy (CAS and multiple primary sites), only considering BIOS packages created at primary site P01:
+	.\Invoke-CMDownloadBIOSPackage.ps1 -BareMetal -Endpoint "CM01.domain.com" -SiteCode "P01"
+
 	# Detect and download latest available BIOS package using a pre-downloaded XML package logic file in a baremetal deployment:
 	.\Invoke-CMDownloadBIOSPackage.ps1 -XMLPackage -XMLDeploymentType "BareMetal"
 
@@ -77,7 +85,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2026-09-03
+    Updated:     2026-10-08
 
     Version history:
     3.0.0 - (2020-10-30) - Script created
@@ -106,6 +114,15 @@
 					 - Get-AuthDomainName resolves the Active Directory DNS domain from, in order: the OSDDOMAINNAME / OSDJoinDomainName task sequence variables, the domain membership of the running device (full OS only), and the DNS suffix of the AdminService endpoint or management point host name (the only sources available in WinPE).
 					 - Get-AdminServiceItem now retries the request with the UPN form (user@domain.com) and then the down-level form (DOMAIN\user) when, and only when, the AdminService responds with 401 Unauthorized. The configured value is always attempted first so a working environment is unchanged, the working credential is reused for the remainder of the run, and a run where every format is rejected logs explicit guidance to move the account to UPN format.
 					 - The self-signed certificate callback was moved into Set-CertificateValidationCallback and is now only registered once per run. Previously Add-Type ran on every certificate failure, so a second AdminService call hitting the same condition failed with a duplicate type error.
+	3.0.9 - (2026-09-21) - Security: removed the blanket TLS certificate validation bypass from the AdminService connection path:
+					 - Set-CertificateValidationCallback installed a callback that returned true for every certificate presented by any host, for the remainder of the process, and the service account credential was then sent over that connection. Any machine able to answer for the endpoint address (DNS, DHCP or ARP spoofing on the deployment network) could therefore collect the AdminService service account password. That callback and its base64 encoded type definition have been removed.
+					 - Set-PinnedCertificateValidationCallback replaces it. A certificate that does not chain to a trusted root is now accepted only when its SHA1 thumbprint matches the value supplied through the 'MDMCertificateThumbprint' task sequence variable or the new CertificateThumbprint parameter. Every other validation failure remains a failure, and a certificate that already validates normally is unaffected.
+					 - When no thumbprint is configured the request is not retried and the credential is not sent. The log names both remedies: trust the issuing CA on the machine (import the root certificate into the boot image for WinPE), or configure the expected thumbprint. BREAKING: an environment that relied on the old bypass to reach a self-signed AdminService binding must do one of those two before this version will connect.
+	3.0.10 - (2026-10-08) - Added support for a hierarchy with a central administration site and multiple primary sites (DriverAutomationTool issue #967):
+					 - New -SiteCode parameter, with the 'MDMSiteCode' task sequence variable used when the parameter is not passed. Packages are global data, so the AdminService on any site returns the packages created at every site, and when the same model has a package at more than one primary the newest one was selected, whichever site created it. Its content is often not on the distribution points the device can reach, so the download failed or crossed the WAN.
+					 - With a site code set, the AdminService BIOS package query also filters on SourceSite, and the XMLPackage logic file entries are filtered on the PackageID prefix, so only packages created at that site are considered.
+					 - The site code must be three letters or digits. An invalid value read from the task sequence variable stops the run with guidance rather than silently matching nothing.
+					 - Without a site code nothing changes: packages from every site are considered, as before.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -141,12 +158,21 @@ param (
 	[ValidateNotNullOrEmpty()]
 	[string]$Password = "",
 	
+	[parameter(Mandatory = $false, HelpMessage = "Specify the expected SHA1 thumbprint of the AdminService certificate. Only required when that certificate does not chain to a root this machine trusts, such as a ConfigMgr self-signed binding.")]
+	[AllowEmptyString()]
+	[string]$CertificateThumbprint = "",
+	
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = "BIOS",
-	
+
+	[parameter(Mandatory = $false, HelpMessage = "Specify the site code of the site that created the BIOS packages, e.g. 'P01', to only consider packages created at that site in a hierarchy with a central administration site.")]
+	[AllowEmptyString()]
+	[ValidatePattern('^([A-Za-z0-9]{3})?$')]
+	[string]$SiteCode = "",
+
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
@@ -473,7 +499,41 @@ Process {
 			}
 		}
 	}
-	
+
+	function Get-PackageSiteCode {
+		# Packages are global data in a hierarchy (CAS with multiple primary sites), so the AdminService on
+		# any site returns the packages created at every site. When a site code is set, only packages created
+		# at that site are considered, so a device cannot select a package from another primary site whose
+		# content is not on the distribution points it can reach.
+		$Script:PackageSiteCode = [string]::Empty
+		$Script:PackageSiteCodeFilter = [string]::Empty
+		$SiteCodeSource = "parameter input"
+		if (-not ([string]::IsNullOrWhiteSpace($SiteCode))) {
+			$Script:PackageSiteCode = $SiteCode
+		} elseif ($Script:PSCmdLet.ParameterSetName -notlike "Debug") {
+			$Script:PackageSiteCode = $TSEnvironment.Value("MDMSiteCode")
+			$SiteCodeSource = "TS environment variable 'MDMSiteCode'"
+		}
+
+		if ([string]::IsNullOrWhiteSpace($Script:PackageSiteCode)) {
+			$Script:PackageSiteCode = [string]::Empty
+			Write-CMLogEntry -Value " - No site code specified, packages created at any site will be considered" -Severity 1
+		} else {
+			$Script:PackageSiteCode = $Script:PackageSiteCode.Trim().ToUpper()
+			if ($Script:PackageSiteCode -notmatch '^[A-Z0-9]{3}$') {
+				Write-CMLogEntry -Value " - Site code '$($Script:PackageSiteCode)' from $($SiteCodeSource) is not valid. A ConfigMgr site code is three letters or digits, e.g. 'P01'" -Severity 3
+
+				# Throw terminating error
+				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
+				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
+			}
+
+			# Appended to the AdminService OData filter; the value is validated above so it cannot alter the query
+			$Script:PackageSiteCodeFilter = " and SourceSite eq '$($Script:PackageSiteCode)'"
+			Write-CMLogEntry -Value " - Site code '$($Script:PackageSiteCode)' read from $($SiteCodeSource), only packages created at this site will be considered" -Severity 1
+		}
+	}
+
 	function ConvertTo-ObfuscatedUserName {
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Specify the user name string to be obfuscated for log output.")]
@@ -553,6 +613,19 @@ Process {
 			}
 		} else {
 			Write-CMLogEntry -Value " - Successfully read service account password from parameter input: ********" -Severity 1
+		}
+		
+		# Resolve the optional AdminService certificate thumbprint. It is only needed when the
+		# AdminService certificate does not chain to a root this machine trusts, and it is what lets
+		# a self-signed binding be accepted without also trusting every other certificate presented.
+		if ((-not ([string]::IsNullOrWhiteSpace($CertificateThumbprint))) -or ($Script:PSCmdLet.ParameterSetName -like "Debug")) {
+			$Script:CertificateThumbprint = $CertificateThumbprint
+		}
+		else {
+			$Script:CertificateThumbprint = $TSEnvironment.Value("MDMCertificateThumbprint")
+		}
+		if (-not ([string]::IsNullOrWhiteSpace($Script:CertificateThumbprint))) {
+			Write-CMLogEntry -Value " - An AdminService certificate thumbprint is configured and will be used if the endpoint certificate does not validate normally" -Severity 1
 		}
 		
 		# Validate that if determined AdminService endpoint type is external, that additional required TS environment variables are available
@@ -679,54 +752,99 @@ Process {
 		Write-CMLogEntry -Value " - Setting 'AdminServiceURL' variable to: $($Script:AdminServiceURL)" -Severity 1
 	}
 	
-	function Install-AuthModule {
-		# Determine if the PSIntuneAuth module needs to be installed
+	function Read-AuthErrorDetail {
+		<#
+		.SYNOPSIS
+			Return the reason Microsoft Entra ID rejected a token request.
+
+		.DESCRIPTION
+			Entra returns the reason as JSON in the response body, while the exception message alone
+			is only the HTTP status, e.g. "The remote server returned an error: (400) Bad Request".
+			The body carries an AADSTS code that names the actual cause, which is the difference
+			between a diagnosable task sequence failure and a dead end:
+
+			  AADSTS50126    the user name or password is wrong
+			  AADSTS50076    the account requires multi-factor authentication
+			  AADSTS50079    the account must enrol for multi-factor authentication
+			  AADSTS53003    access blocked by a Conditional Access policy
+			  AADSTS65001    the client app has no consent for the requested resource
+			  AADSTS7000218  the client app is not enabled for public client flows
+
+			Falls back to the exception message when the body cannot be read.
+		#>
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the error record captured from the token request.")]
+			[ValidateNotNullOrEmpty()]
+			$ErrorRecord
+		)
 		try {
-			Write-CMLogEntry -Value " - Attempting to locate PSIntuneAuth module" -Severity 1
-			$PSIntuneAuthModule = Get-InstalledModule -Name "PSIntuneAuth" -ErrorAction Stop -Verbose:$false
-			if ($null -ne $PSIntuneAuthModule) {
-				Write-CMLogEntry -Value " - Authentication module detected, checking for latest version" -Severity 1
-				$LatestModuleVersion = (Find-Module -Name "PSIntuneAuth" -ErrorAction SilentlyContinue -Verbose:$false).Version
-				if ($LatestModuleVersion -gt $PSIntuneAuthModule.Version) {
-					Write-CMLogEntry -Value " - Latest version of PSIntuneAuth module is not installed, attempting to install: $($LatestModuleVersion.ToString())" -Severity 1
-					$null = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				}
-			}
+			$ResponseStream = $ErrorRecord.Exception.Response.GetResponseStream()
+			$ResponseStream.Position = 0
+			$StreamReader = New-Object -TypeName System.IO.StreamReader -ArgumentList $ResponseStream
+			$ErrorDetail = $StreamReader.ReadToEnd() | ConvertFrom-Json
+
+			# error_description is multi-line; the first line carries the AADSTS code and the reason
+			$Description = ($ErrorDetail.error_description -split "`r?`n")[0]
+
+			# Handle return value
+			return "$($ErrorDetail.error): $($Description)"
 		} catch [System.Exception] {
-			Write-CMLogEntry -Value " - Unable to detect PSIntuneAuth module, attempting to install from PSGallery" -Severity 2
-			try {
-				# Install NuGet package provider
-				$null = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
-				
-				# Install PSIntuneAuth module
-				Install-Module -Name "PSIntuneAuth" -Scope AllUsers -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				Write-CMLogEntry -Value " - Successfully installed PSIntuneAuth module" -Severity 1
-			} catch [System.Exception] {
-				Write-CMLogEntry -Value " - An error occurred while attempting to install PSIntuneAuth module. Error message: $($_.Exception.Message)" -Severity 3
-				
-				# Throw terminating error
-				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
-				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
-			}
+			# Handle return value
+			return $ErrorRecord.Exception.Message
 		}
 	}
-	
+
 	function Get-AuthToken {
+		<#
+		.SYNOPSIS
+			Retrieve an access token for the AdminService from Microsoft Entra ID.
+
+		.DESCRIPTION
+			Requests the token directly from the Entra ID token endpoint. This previously ran through
+			the PSIntuneAuth module, which loads ADAL out of the AzureAD module and installs both from
+			the PSGallery on demand. The AzureAD module was retired in October 2025, so that path no
+			longer works at all -- and installing modules inside WinPE required the NuGet provider, a
+			reachable PSGallery and a writable module path, three failure modes in the most fragile
+			part of a deployment, to obtain what is a single HTTPS POST.
+
+			The grant is unchanged: a delegated (user) token requested by the CMG native client app,
+			for the CMG server app as the audience, using the v1.0 endpoint and a 'resource' value.
+			That is precisely what the module was doing underneath, so no app registration or task
+			sequence variable has to change.
+		#>
+		# Reuse a cached token while more than five minutes of its lifetime remain. A BIOS package
+		# phase on a slow link can outlive a token, and nothing here refreshed one previously.
+		if (($null -ne $Script:AuthTokenExpiry) -and ((Get-Date) -lt $Script:AuthTokenExpiry.AddMinutes(-5))) {
+			Write-CMLogEntry -Value " - Reusing cached authentication token, valid until $($Script:AuthTokenExpiry.ToString("u"))" -Severity 1
+			return
+		}
+
+		$TokenEndpointUri = "https://login.microsoftonline.com/$($TenantName)/oauth2/token"
+		$TokenRequestBody = @{
+			grant_type = "password"
+			client_id  = $ClientID
+			resource   = $ApplicationIDURI
+			username   = $Credential.UserName
+			password   = $Credential.GetNetworkCredential().Password
+		}
+
 		try {
-			# Attempt to install PSIntuneAuth module, if already installed ensure the latest version is being used
-			Install-AuthModule
-			
-			# Import MS Intune Auth Token
-			Write-CMLogEntry -Value " - Importing PSIntuneAuth PS module" -Severity 1
-			Import-Module -Name PSIntuneAuth
-			
 			# Retrieve authentication token
 			Write-CMLogEntry -Value " - Attempting to retrieve authentication token using native client with ID: $($ClientID)" -Severity 1
-			$Script:AuthToken = Get-MSIntuneAuthToken -TenantName $TenantName -ClientID $ClientID -Credential $Credential -Resource $ApplicationIDURI -RedirectUri "https://login.microsoftonline.com/common/oauth2/nativeclient" -ErrorAction Stop
-			Write-CMLogEntry -Value " - Successfully retrieved authentication token" -Severity 1
+			Write-CMLogEntry -Value " - Requesting token for resource: $($ApplicationIDURI)" -Severity 1
+			$TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenEndpointUri -Body $TokenRequestBody -ContentType "application/x-www-form-urlencoded" -UseBasicParsing -ErrorAction Stop
+
+			# Headers only -- every value in this table is sent as an HTTP header on each AdminService
+			# call, so the token expiry is held separately rather than added here
+			$Script:AuthToken = @{
+				"Content-Type"  = "application/json"
+				"Authorization" = "Bearer $($TokenResponse.access_token)"
+			}
+			$Script:AuthTokenExpiry = (Get-Date).AddSeconds([int]$TokenResponse.expires_in)
+			Write-CMLogEntry -Value " - Successfully retrieved authentication token, valid until $($Script:AuthTokenExpiry.ToString("u"))" -Severity 1
 		} catch [System.Exception] {
-			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $($PSItem.Exception.Message)" -Severity 3
-			
+			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $(Read-AuthErrorDetail -ErrorRecord $PSItem)" -Severity 3
+
 			# Throw terminating error
 			$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
 			$PSCmdlet.ThrowTerminatingError($ErrorRecord)
@@ -873,31 +991,73 @@ Process {
 		return (New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList @($UserName, $EncryptedPassword))
 	}
 
-	function Set-CertificateValidationCallback {
+	function Set-PinnedCertificateValidationCallback {
 		<#
 		.SYNOPSIS
-			Configure the current session to ignore self-signed certificate validation errors.
+			Pin AdminService TLS validation to one expected certificate thumbprint.
 
 		.DESCRIPTION
-			Previously performed inline in Get-AdminServiceItem, which called Add-Type on every
-			certificate failure. A second AdminService call hitting the same condition would then fail
-			because the type already existed, so the definition is now added at most once per run.
+			This replaces the previous behaviour, which installed a callback that returned true for
+			every certificate presented by any host for the remainder of the process. Any machine that
+			could answer for the endpoint address was therefore trusted, and the service account
+			credential was sent to it, so that behaviour has been removed.
+
+			Pinning is the only supported way to keep using a certificate that does not chain to a
+			trusted root. The expected thumbprint comes from the MDMCertificateThumbprint task
+			sequence variable or the CertificateThumbprint parameter. When neither supplies one this
+			function changes nothing and returns false, so the caller fails with guidance instead of
+			authenticating to an endpoint whose identity it could not verify.
+
+			A certificate that already validates normally is unaffected -- the callback only rescues
+			the one pinned certificate, and every other validation failure stays a failure.
 		#>
+		if ([string]::IsNullOrWhiteSpace($Script:CertificateThumbprint)) {
+			return $false
+		}
 		if ($Script:CertificateValidationCallbackEnabled -eq $true) {
-			return
+			return $true
 		}
 
-		# Attempt to ignore self-signed certificate binding for AdminService
-		# Convert encoded base64 string for ignore self-signed certificate validation functionality
-		$CertificationValidationCallbackEncoded = "DQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0AOwANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQAuAE4AZQB0ADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAZQBjAHUAcgBpAHQAeQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHUAcwBpAG4AZwAgAFMAeQBzAHQAZQBtAC4AUwBlAGMAdQByAGkAdAB5AC4AQwByAHkAcAB0AG8AZwByAGEAcABoAHkALgBYADUAMAA5AEMAZQByAHQAaQBmAGkAYwBhAHQAZQBzADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAcAB1AGIAbABpAGMAIABjAGwAYQBzAHMAIABTAGUAcgB2AGUAcgBDAGUAcgB0AGkAZgBpAGMAYQB0AGUAVgBhAGwAaQBkAGEAdABpAG8AbgBDAGEAbABsAGIAYQBjAGsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIAB2AG8AaQBkACAASQBnAG4AbwByAGUAKAApAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAaQBmACgAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgAD0APQBuAHUAbABsACkADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgACsAPQAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAZABlAGwAZQBnAGEAdABlAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAATwBiAGoAZQBjAHQAIABvAGIAagAsACAADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAFgANQAwADkAQwBlAHIAdABpAGYAaQBjAGEAdABlACAAYwBlAHIAdABpAGYAaQBjAGEAdABlACwAIAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAWAA1ADAAOQBDAGgAYQBpAG4AIABjAGgAYQBpAG4ALAAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIABTAHMAbABQAG8AbABpAGMAeQBFAHIAcgBvAHIAcwAgAGUAcgByAG8AcgBzAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHIAZQB0AHUAcgBuACAAdAByAHUAZQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAA"
-		$CertificationValidationCallback = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($CertificationValidationCallbackEncoded))
-
-		# Load required type definition to be able to ignore self-signed certificate to circumvent issues with AdminService running with ConfigMgr self-signed certificate binding
-		if (-not ("ServerCertificateValidationCallback" -as [type])) {
-			Add-Type -TypeDefinition $CertificationValidationCallback
+		# Thumbprints are routinely copied out of the certificate UI carrying spaces and a leading
+		# invisible mark, so reduce the value to hex characters before checking its length
+		$ExpectedThumbprint = ($Script:CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpper()
+		if ($ExpectedThumbprint -notmatch '^[0-9A-F]{40}$') {
+			Write-CMLogEntry -Value " - The configured AdminService certificate thumbprint is not a 40 character SHA1 thumbprint and will be ignored" -Severity 3
+			return $false
 		}
-		[ServerCertificateValidationCallback]::Ignore()
+
+		$PinnedValidationType = @'
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class DATPinnedCertificateValidation
+{
+    public static string ExpectedThumbprint = String.Empty;
+    public static void Enable(string thumbprint)
+    {
+        ExpectedThumbprint = thumbprint;
+        ServicePointManager.ServerCertificateValidationCallback =
+            delegate(Object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+            {
+                if (errors == SslPolicyErrors.None) { return true; }
+                if (certificate == null) { return false; }
+                if (String.IsNullOrEmpty(ExpectedThumbprint)) { return false; }
+                return String.Equals(certificate.GetCertHashString(), ExpectedThumbprint, StringComparison.OrdinalIgnoreCase);
+            };
+    }
+}
+'@
+
+		if (-not ("DATPinnedCertificateValidation" -as [type])) {
+			Add-Type -TypeDefinition $PinnedValidationType
+		}
+		[DATPinnedCertificateValidation]::Enable($ExpectedThumbprint)
 		$Script:CertificateValidationCallbackEnabled = $true
+		Write-CMLogEntry -Value " - AdminService certificate validation is pinned to thumbprint: $($ExpectedThumbprint)" -Severity 1
+
+		# Handle return value
+		return $true
 	}
 
 	function Test-AuthenticationFailure {
@@ -1009,15 +1169,20 @@ Process {
 					}
 					catch [System.Security.Authentication.AuthenticationException] {
 						Write-CMLogEntry -Value " - The remote AdminService endpoint certificate is invalid according to the validation procedure. Error message: $($PSItem.Exception.Message)" -Severity 2
-						Write-CMLogEntry -Value " - Will attempt to set the current session to ignore self-signed certificates and retry AdminService endpoint connection" -Severity 2
-						Set-CertificateValidationCallback
+						if (Set-PinnedCertificateValidationCallback) {
+							Write-CMLogEntry -Value " - Retrying the AdminService endpoint connection against the pinned certificate thumbprint" -Severity 2
 
-						try {
-							# Call AdminService endpoint to retrieve package data
-							$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
-							$RequestSucceeded = $true
+							try {
+								# Call AdminService endpoint to retrieve package data
+								$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
+								$RequestSucceeded = $true
+							}
+							catch [System.Exception] {
+								$LastErrorRecord = $PSItem
+							}
 						}
-						catch [System.Exception] {
+						else {
+							Write-CMLogEntry -Value " - The AdminService endpoint identity could not be verified, so the service account credential was not sent. Trust the issuing CA on this machine (import the root certificate into the boot image for WinPE), or set the 'MDMCertificateThumbprint' task sequence variable to the expected AdminService certificate thumbprint" -Severity 3
 							$LastErrorRecord = $PSItem
 						}
 					}
@@ -1074,12 +1239,13 @@ Process {
 				"Production" {
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file BIOS package entries" -Severity 1
+						# The PackageID prefix is the site that created the package; with no site code '*' matches every package
 						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
-							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter
+							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter -and $_.PackageID -like "$($Script:PackageSiteCode)*"
 						}
 					} else {
 						Write-CMLogEntry -Value " - Querying AdminService for BIOS package instances" -Severity 1
-						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')" | Where-Object {
+						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')$($Script:PackageSiteCodeFilter)" | Where-Object {
 							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Retired"
 						}
 					}
@@ -1089,11 +1255,11 @@ Process {
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file BIOS package entries" -Severity 1
 						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
-							$_.Name -match "Pilot" -and $_.Name -match $Filter
+							$_.Name -match "Pilot" -and $_.Name -match $Filter -and $_.PackageID -like "$($Script:PackageSiteCode)*"
 						}
 					} else {
 						Write-CMLogEntry -Value " - Querying AdminService for BIOS package instances" -Severity 1
-						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')" | Where-Object {
+						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')$($Script:PackageSiteCodeFilter)" | Where-Object {
 							$_.Name -match "Pilot"
 						}
 					}
@@ -1106,6 +1272,9 @@ Process {
 				return $Packages
 			} else {
 				Write-CMLogEntry -Value " - Retrieved a total of '0' BIOS packages from $($Script:PackageSource) matching operational mode: $($OperationalMode)" -Severity 3
+				if (-not ([string]::IsNullOrEmpty($Script:PackageSiteCode))) {
+					Write-CMLogEntry -Value " - Only packages created at site '$($Script:PackageSiteCode)' were considered. Check that the site code is the site where the BIOS packages were created" -Severity 3
+				}
 				
 				# Throw terminating error
 				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
@@ -1675,7 +1844,7 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.8" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.10" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
@@ -1710,7 +1879,10 @@ Process {
 		
 		# Determine the deployment type mode for driver package installation
 		Get-DeploymentType
-		
+
+		# Determine the site code that BIOS packages must have been created at, if any
+		Get-PackageSiteCode
+
 		# Determine if running on supported computer system type
 		Get-ComputerSystemType
 		
