@@ -137,12 +137,12 @@ Process {
 	}
 	
     # Flash CMD upgrade utility file name
-    if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-        $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash64.cmd" } | Select-Object -ExpandProperty FullName
-    }
-    else {
-        $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -ExpandProperty FullName
-    }
+    if ($TSEnvironment.Value("_SMSTSinWinPE") -eq $false) {
+	    $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash64.cmd" } | Select-Object -ExpandProperty FullName
+	    if (-not($FlashCMDUtility)) {
+	        $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -ExpandProperty FullName
+	    }
+	}
 
 	if ($WinUPTPUtility -ne $null) {
 		# Set required switches for silent upgrade of the bios and logging
