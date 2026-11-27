@@ -125,19 +125,23 @@ Process {
 	}
 	
 	# WinUPTP bios upgrade utility file name
-	if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP64.exe"	} | Select-Object -ExpandProperty FullName
+	if(($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
+		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinPEUPTP.exe"	} | Select-Object -ExpandProperty FullName
 	}
-	else {
-		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP.exe" } | Select-Object -ExpandProperty FullName
+	
+	if ($WinUPTPUtility -eq $null) {
+  		$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP64.exe" } | Select-Object -ExpandProperty FullName
+		if ($WinUPTPUtility -eq $null) {
+			$WinUPTPUtility = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "WinUPTP.exe" } | Select-Object -ExpandProperty FullName
+	  	}
 	}
 	
     # Flash CMD upgrade utility file name
-    if (([Environment]::Is64BitOperatingSystem) -eq $true) {
+    if (($TSEnvironment -ne $null) -and $TSEnvironment.Value("_SMSTSinWinPE") -eq $false) {
         $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash64.cmd" } | Select-Object -ExpandProperty FullName
-    }
-    else {
-        $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -ExpandProperty FullName
+        if (-not($FlashCMDUtility)) {
+            $FlashCMDUtility = Get-ChildItem -Path $Path -Filter "*.cmd" -Recurse | Where-Object { $_.Name -like "Flash.cmd" } | Select-Object -ExpandProperty FullName
+        }
     }
 
 	if ($WinUPTPUtility -ne $null) {
