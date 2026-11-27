@@ -127,6 +127,11 @@
 					 - Compare-BIOSVersion decided Lenovo on the release date alone, comparing Lenovo's publication date with the firmware build date in Win32_BIOS. The build date is usually weeks earlier, so a device already on the package's BIOS was flagged for flashing on every run, and a newer package with an earlier date was not flagged at all.
 					 - The version now decides. A package matching the device's UEFI BIOS or System Firmware version is installed, and one ahead of every version the device reports is an update. A device ahead of the package is only trusted when both versions were read, because a package on the System Firmware counter looks older than the UEFI BIOS version even when it is newer. Anything else falls back to the release date as before.
 					 - These no longer stop the run with exit code 1: a Lenovo package with no release date in its description, a Lenovo device reporting no BIOS date, and a Lenovo device matching more than one package, where the script read a property that does not exist.
+	3.0.12 - (2026-11-11) - A Panasonic device is now reported as manufacturer 'Panasonic', the name the Driver Automation Tool sets on its packages and the name Invoke-CMApplyDriverPackage.ps1 4.3.9 uses (DriverAutomationTool issue #980). It was 'Panasonic Corporation'. BIOS matching is unchanged: it still supports Dell, Lenovo, HP and Microsoft only.
+	3.0.13 - (2026-11-27) - Added task sequence variables describing the BIOS update, for later steps such as the flash step or a custom error dialog (ModernDriverManagement issue #347):
+					 - MDMBIOSCurrentVersion holds the installed BIOS version as Windows reports it (Win32_BIOS SMBIOSBIOSVersion).
+					 - MDMBIOSPackageID, MDMBIOSPackageName and MDMBIOSPackageVersion hold the selected package. They are set before the version comparison, so they are there whether or not the BIOS needs updating, and are not set when no package matches.
+					 - The 'BIOS is already up to date' log line for a single matching package now shows the package version. It read a property that does not exist, so the version was blank.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -412,7 +417,36 @@ Process {
 		Write-CMLogEntry -Value " - Setting task sequence variable OSDDownloadDestinationPath to a blank value" -Severity 1
 		$TSEnvironment.Value("OSDDownloadDestinationPath") = [System.String]::Empty
 	}
-	
+
+	function Set-TSVariableList {
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the task sequence variable names and the values to set them to.")]
+			[ValidateNotNull()]
+			[System.Collections.Specialized.OrderedDictionary]$Variables
+		)
+		foreach ($Name in $Variables.Keys) {
+			Write-CMLogEntry -Value " - Setting task sequence variable $($Name) to: $($Variables[$Name])" -Severity 1
+			$TSEnvironment.Value($Name) = [string]$Variables[$Name]
+		}
+	}
+
+	function Set-BIOSPackageVariables {
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the selected BIOS package object.")]
+			[ValidateNotNull()]
+			[System.Object]$Package
+		)
+		# Name the selected package for later steps, such as the flash step or a custom error dialog. Set before the
+		# version comparison, so they are there whether or not the BIOS needs updating (ModernDriverManagement issue #347)
+		if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+			Set-TSVariableList -Variables ([ordered]@{
+				MDMBIOSPackageID = $Package.PackageID
+				MDMBIOSPackageName = $Package.Name
+				MDMBIOSPackageVersion = $Package.Version
+			})
+		}
+	}
+
 	function New-TerminatingErrorRecord {
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Specify the exception message details.")]
@@ -1339,7 +1373,8 @@ public class DATPinnedCertificateValidation
 				$ComputerDetails.SystemSKU = ((Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
 			}
 			"*Panasonic*" {
-				$ComputerDetails.Manufacturer = "Panasonic Corporation"
+				# Same name as Invoke-CMApplyDriverPackage.ps1 and the Driver Automation Tool's packages (issue #980)
+				$ComputerDetails.Manufacturer = "Panasonic"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").BaseBoardProduct.Trim()
 			}
@@ -1837,7 +1872,8 @@ public class DATPinnedCertificateValidation
 						# Determine the most current package from list
 						if ($PackageList.Count -eq 1) {
 							Write-CMLogEntry -Value "BIOS package list contains a single match, attempting to set task sequence variable" -Severity 1
-							
+							Set-BIOSPackageVariables -Package $PackageList[0]
+
 							# Check if BIOS package is newer than currently installed
 							if ($ComputerManufacturer -match "Dell") {
 								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
@@ -1870,7 +1906,7 @@ public class DATPinnedCertificateValidation
 										Write-CMLogEntry -Value "An error occurred while downloading the BIOS update (single package match). Error message: $($_.Exception.Message)" -Severity 3; exit 14
 									}
 								} else {
-									Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].PackageVersion) version" -Severity 1
+									Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].Version) version" -Severity 1
 								}
 							} else {
 								if ($Script:ForceBIOSDownload -eq $true) {
@@ -1915,6 +1951,8 @@ public class DATPinnedCertificateValidation
 							# Select-Object -First 1 reductions above collapse $PackageList to a scalar.
 							$PackageList = @($PackageList | Where-Object { $null -ne $_ })
 							if ($PackageList.Count -eq 1) {
+								Set-BIOSPackageVariables -Package $PackageList[0]
+
 								# Check if BIOS package is newer than currently installed
 								if ($ComputerManufacturer -match "Dell") {
 									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
@@ -1972,7 +2010,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.11" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.13" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
@@ -2059,6 +2097,11 @@ public class DATPinnedCertificateValidation
 		# Get existing BIOS version
 		$CurrentBIOSVersion = (Get-WmiObject -Class Win32_BIOS | Select-Object -ExpandProperty SMBIOSBIOSVersion).Trim()
 		Write-CMLogEntry -Value "Current BIOS version determined as: $($CurrentBIOSVersion)" -Severity 1
+
+		# The installed BIOS version as Windows reports it, for later steps such as a custom error dialog (ModernDriverManagement issue #347)
+		if ($PSCmdLet.ParameterSetName -notlike "Debug") {
+			Set-TSVariableList -Variables ([ordered]@{ MDMBIOSCurrentVersion = $CurrentBIOSVersion })
+		}
 		$ComputerData = $ComputerData | Select-Object -first 1
 		
 		# Determine if a newer BIOS release is available
